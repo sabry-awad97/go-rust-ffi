@@ -20,6 +20,24 @@ lazy_static! {
 }
 type Callback = Box<dyn Fn(f64) -> f64 + Send>;
 
+/// Enum representing different shape types, matching the C enum.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub enum ShapeType {
+    Circle = 0,
+    Square = 1,
+    Triangle = 2,
+}
+
+/// A shape struct with C layout that can represent different shapes.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct Shape {
+    pub shape_type: ShapeType,
+    pub dimension1: c_double, // radius for circle, side for square, base for triangle
+    pub dimension2: c_double, // unused for circle/square, height for triangle
+}
+
 /// Define a Rust struct with C layout representing a circle.
 /// Deriving Copy and Clone allows us to pass the struct by value.
 #[repr(C)]
@@ -47,6 +65,7 @@ pub struct CircleLibrary {
     calculate_circle_area_async: unsafe extern "C" fn(c_double, AsyncCallback, *mut c_void),
     calculate_circle_area_async_multiple:
         unsafe extern "C" fn(c_double, AsyncCallback, *mut c_void),
+    calculate_shape_area: unsafe extern "C" fn(Shape) -> c_double,
 }
 
 impl CircleLibrary {
@@ -85,6 +104,9 @@ impl CircleLibrary {
                 unsafe extern "C" fn(c_double, AsyncCallback, *mut c_void),
             > = lib.get(b"CalculateCircleAreaAsyncMultiple")?;
 
+            let calculate_shape_area: Symbol<unsafe extern "C" fn(Shape) -> c_double> =
+                lib.get(b"CalculateShapeArea")?;
+
             Ok(CircleLibrary {
                 _lib: lib,
                 // Dereference the symbols to store the function pointers.
@@ -95,6 +117,7 @@ impl CircleLibrary {
                 call_callback: *call_callback,
                 calculate_circle_area_async: *calculate_circle_area_async,
                 calculate_circle_area_async_multiple: *calculate_circle_area_async_multiple,
+                calculate_shape_area: *calculate_shape_area,
             })
         }
     }
@@ -204,6 +227,11 @@ impl CircleLibrary {
         }
         rx
     }
+
+    /// Calculate the area of any shape using the shape enum
+    pub fn calculate_shape_area(&self, shape: &Shape) -> f64 {
+        unsafe { (self.calculate_shape_area)(*shape) }
+    }
 }
 
 /// Extern "C" trampoline function that matches the expected callback signature.
@@ -221,13 +249,12 @@ extern "C" fn trampoline(val: c_double) -> c_double {
 /// It recovers the Arc-wrapped sender and sends each callback result.
 /// Returns true to continue receiving callbacks, false when done.
 unsafe extern "C" fn async_trampoline_multi(result: c_double, user_data: *mut c_void) -> bool {
-    println!("Rust: Received callback with result {}", result);
     // Convert the raw pointer back to a reference.
     let tx = &*(user_data as *const Arc<Mutex<mpsc::UnboundedSender<f64>>>);
     // Attempt to send the result (ignore errors if the receiver is dropped).
     if let Ok(tx) = tx.lock() {
         match tx.send(result) {
-            Ok(_) => println!("Rust: Successfully sent result"),
+            Ok(_) => (),
             Err(e) => println!("Rust: Failed to send result: {}", e),
         }
     }
@@ -305,6 +332,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("Rust: Finished receiving results");
+
+    // Example using the Shape enum and struct
+    let circle_shape = Shape {
+        shape_type: ShapeType::Circle,
+        dimension1: 5.0, // radius
+        dimension2: 0.0, // unused for circle
+    };
+    println!(
+        "Circle area using Shape enum: {}",
+        circle_lib.calculate_shape_area(&circle_shape)
+    );
+
+    let triangle_shape = Shape {
+        shape_type: ShapeType::Triangle,
+        dimension1: 4.0, // base
+        dimension2: 3.0, // height
+    };
+    println!(
+        "Triangle area using Shape enum: {}",
+        circle_lib.calculate_shape_area(&triangle_shape)
+    );
 
     Ok(())
 }

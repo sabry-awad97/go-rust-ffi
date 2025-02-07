@@ -25,6 +25,20 @@ static _Bool call_async_callback(async_callback_t cb, double result, void* userD
 typedef struct {
     double radius;
 } Circle;
+
+// Define Shape enum type and values
+typedef enum {
+    SHAPE_CIRCLE = 0,
+    SHAPE_SQUARE = 1,
+    SHAPE_TRIANGLE = 2
+} ShapeType;
+
+// Define a Shape struct that includes the type and dimensions
+typedef struct {
+    ShapeType shape_type;
+    double dimension1; // radius for circle, side for square, base for triangle
+    double dimension2; // unused for circle/square, height for triangle
+} Shape;
 */
 import "C"
 import (
@@ -92,6 +106,20 @@ func CalculateCircleAreaAsyncMultiple(radius C.double, cb C.async_callback_t, us
             }
         }
     }(radius, cb, userData)
+}
+
+//export CalculateShapeArea
+func CalculateShapeArea(shape C.Shape) C.double {
+    switch shape.shape_type {
+    case C.SHAPE_CIRCLE:
+        return C.double(math.Pi * float64(shape.dimension1) * float64(shape.dimension1))
+    case C.SHAPE_SQUARE:
+        return C.double(float64(shape.dimension1) * float64(shape.dimension1))
+    case C.SHAPE_TRIANGLE:
+        return C.double(0.5 * float64(shape.dimension1) * float64(shape.dimension2))
+    default:
+        return 0.0
+    }
 }
 
 func main() {} // Required for a Go shared library
