@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use libloading::{Library, Symbol};
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_double, c_void};
+use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -273,6 +273,63 @@ unsafe extern "C" fn async_trampoline(result: c_double, user_data: *mut c_void) 
     false // This is a one-shot callback, so we're done after sending
 }
 
+/// A safe wrapper around the Go number generator
+pub struct NumberGenerator<'lib> {
+    id: i64,
+    lib: &'lib Library,
+}
+
+// Implement Drop to ensure we clean up the Go resources
+impl<'lib> Drop for NumberGenerator<'lib> {
+    fn drop(&mut self) {
+        self.free_generator();
+    }
+}
+
+impl<'lib> NumberGenerator<'lib> {
+    pub fn new(lib: &'lib Library) -> Result<Self, Box<dyn std::error::Error>> {
+        unsafe {
+            let create_generator: Symbol<unsafe extern "C" fn() -> i64> =
+                lib.get(b"CreateNumberGenerator")?;
+            let id = create_generator();
+            Ok(NumberGenerator { id, lib })
+        }
+    }
+
+    pub fn next(&self) -> Result<Option<i32>, Box<dyn std::error::Error>> {
+        unsafe {
+            let get_next: Symbol<unsafe extern "C" fn(i64) -> (c_int, bool)> =
+                self.lib.get(b"GetNextNumber")?;
+            let (num, ok) = get_next(self.id);
+            if ok {
+                Ok(Some(num as i32))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    pub fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            let stop_generator: Symbol<unsafe extern "C" fn(i64)> =
+                self.lib.get(b"StopNumberGenerator")?;
+            stop_generator(self.id);
+            Ok(())
+        }
+    }
+
+    fn free_generator(&self) {
+        unsafe {
+            if let Ok(free_generator) = self
+                .lib
+                .get::<unsafe extern "C" fn(i64)>(b"FreeNumberGenerator")
+            {
+                free_generator(self.id);
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Make sure that "lib.dll" is in the same directory as the binary or adjust the path accordingly.
@@ -353,6 +410,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Triangle area using Shape enum: {}",
         circle_lib.calculate_shape_area(&triangle_shape)
     );
+
+    // Example using Go channels through the number generator
+    println!("\nTesting Go channels with number generator:");
+    let generator = NumberGenerator::new(&circle_lib._lib)?;
+
+    // Get the first 5 numbers
+    for _ in 0..5 {
+        if let Ok(Some(num)) = generator.next() {
+            println!("Received number: {}", num);
+        }
+    }
+
+    // Stop the generator
+    generator.stop()?;
+    println!("Number generator stopped");
 
     Ok(())
 }

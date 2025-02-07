@@ -44,6 +44,7 @@ import "C"
 import (
 	"fmt"
 	"math"
+	"sync"
 	"time"
 	"unsafe"
 )
@@ -119,6 +120,89 @@ func CalculateShapeArea(shape C.Shape) C.double {
         return C.double(0.5 * float64(shape.dimension1) * float64(shape.dimension2))
     default:
         return 0.0
+    }
+}
+
+// NumberGenerator manages number generation
+type NumberGenerator struct {
+    ch    chan int
+    done  chan bool
+}
+
+var (
+    generators = make(map[int64]*NumberGenerator)
+    nextID    int64 = 1
+    genMutex sync.Mutex
+)
+
+//export CreateNumberGenerator
+func CreateNumberGenerator() C.longlong {
+    genMutex.Lock()
+    defer genMutex.Unlock()
+
+    gen := &NumberGenerator{
+        ch:   make(chan int),
+        done: make(chan bool),
+    }
+
+    // Start generating numbers in a goroutine
+    go func() {
+        i := 0
+        for {
+            select {
+            case <-gen.done:
+                close(gen.ch)
+                return
+            case gen.ch <- i:
+                i++
+                time.Sleep(500 * time.Millisecond) // Delay between numbers
+            }
+        }
+    }()
+
+    id := nextID
+    generators[id] = gen
+    nextID++
+    return C.longlong(id)
+}
+
+//export GetNextNumber
+func GetNextNumber(id C.longlong) (C.int, C._Bool) {
+    genMutex.Lock()
+    gen, exists := generators[int64(id)]
+    genMutex.Unlock()
+
+    if !exists {
+        return 0, C._Bool(false)
+    }
+
+    num, ok := <-gen.ch
+    return C.int(num), C._Bool(ok)
+}
+
+//export StopNumberGenerator
+func StopNumberGenerator(id C.longlong) {
+    genMutex.Lock()
+    gen, exists := generators[int64(id)]
+    genMutex.Unlock()
+
+    if exists {
+        gen.done <- true
+        time.Sleep(100 * time.Millisecond) // Wait for cleanup
+    }
+}
+
+//export FreeNumberGenerator
+func FreeNumberGenerator(id C.longlong) {
+    genMutex.Lock()
+    defer genMutex.Unlock()
+
+    if gen, exists := generators[int64(id)]; exists {
+        select {
+        case gen.done <- true:
+        default:
+        }
+        delete(generators, int64(id))
     }
 }
 
