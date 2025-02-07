@@ -1,8 +1,9 @@
-// File: circle_wrapper.rs
-
 use libloading::{Library, Symbol};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_double};
+
+/// Type alias for the callback function pointer matching Go's `callback_t`
+pub type CallbackType = unsafe extern "C" fn(c_double) -> c_double;
 
 /// A safe wrapper around the Go circle library.
 pub struct CircleLibrary {
@@ -11,6 +12,7 @@ pub struct CircleLibrary {
     calculate_circle_area: unsafe extern "C" fn(c_double) -> c_double,
     format_circle_info: unsafe extern "C" fn(c_double) -> *mut c_char,
     free_string: unsafe extern "C" fn(*mut c_char),
+    call_callback: unsafe extern "C" fn(c_double, CallbackType) -> c_double,
 }
 
 impl CircleLibrary {
@@ -34,6 +36,8 @@ impl CircleLibrary {
             let format_circle_info: Symbol<unsafe extern "C" fn(c_double) -> *mut c_char> =
                 lib.get(b"FormatCircleInfo")?;
             let free_string: Symbol<unsafe extern "C" fn(*mut c_char)> = lib.get(b"FreeString")?;
+            let call_callback: Symbol<unsafe extern "C" fn(c_double, CallbackType) -> c_double> =
+                lib.get(b"CallCallback")?;
 
             Ok(CircleLibrary {
                 _lib: lib,
@@ -41,6 +45,7 @@ impl CircleLibrary {
                 calculate_circle_area: *calculate_circle_area,
                 format_circle_info: *format_circle_info,
                 free_string: *free_string,
+                call_callback: *call_callback,
             })
         }
     }
@@ -79,6 +84,13 @@ impl CircleLibrary {
             Ok(result)
         }
     }
+
+    /// Calls a callback function using the Go library.
+    ///
+    /// The callback is provided as an extern "C" function pointer.
+    pub fn call_callback(&self, val: f64, callback: CallbackType) -> f64 {
+        unsafe { (self.call_callback)(val, callback) }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -92,5 +104,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let info = circle_lib.format_circle_info(radius)?;
     println!("{}", info);
 
+    // Call the callback via the Go library.
+    let callback_result = circle_lib.call_callback(5.0, square_callback as CallbackType);
+    println!("Callback result (square of 5.0): {}", callback_result);
+
     Ok(())
+}
+
+/// An example callback function that squares its input.
+/// Must have the `extern "C"` calling convention.
+extern "C" fn square_callback(val: c_double) -> c_double {
+    val * val
 }
