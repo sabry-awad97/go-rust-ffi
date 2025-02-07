@@ -10,9 +10,19 @@ pub type CallbackType = unsafe extern "C" fn(c_double) -> c_double;
 
 // Global storage for the callback closure.
 // This global variable is protected by a Mutex and allows the trampoline function
-// to retrieve the user-provided closure. (See :contentReference[oaicite:2]{index=2} and :contentReference[oaicite:3]{index=3})
+// to retrieve the user-provided closure.
+
 lazy_static! {
-    static ref CALLBACK_STORE: Mutex<Option<Box<dyn Fn(f64) -> f64 + Send>>> = Mutex::new(None);
+    static ref CALLBACK_STORE: Mutex<Option<Callback>> = Mutex::new(None);
+}
+type Callback = Box<dyn Fn(f64) -> f64 + Send>;
+
+/// Define a Rust struct with C layout representing a circle.
+/// Deriving Copy and Clone allows us to pass the struct by value.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct Circle {
+    pub radius: c_double,
 }
 
 /// A safe wrapper around the Go circle library that includes callback support.
@@ -23,8 +33,10 @@ lazy_static! {
 /// unsafe FFI and pointer operations.
 pub struct CircleLibrary {
     // We store the leaked library reference to ensure that the symbols remain valid.
+    // Keep the loaded library alive for the lifetime of the wrapper.
     _lib: &'static Library,
     calculate_circle_area: unsafe extern "C" fn(c_double) -> c_double,
+    calculate_struct_area: unsafe extern "C" fn(Circle) -> c_double,
     format_circle_info: unsafe extern "C" fn(c_double) -> *mut c_char,
     free_string: unsafe extern "C" fn(*mut c_char),
     call_callback: unsafe extern "C" fn(c_double, CallbackType) -> c_double,
@@ -41,13 +53,18 @@ impl CircleLibrary {
     pub fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         // Load the library.
         let lib = unsafe { Library::new(path) }?;
-        // Leak the library to obtain a 'static reference.
+        // Leak the library to obtain a 'static lifetime reference; this is acceptable when the
+        // library is intended to remain loaded for the duration of the program.
         let lib: &'static Library = Box::leak(Box::new(lib));
 
         unsafe {
             // Load the function symbols.
             let calculate_circle_area: Symbol<unsafe extern "C" fn(c_double) -> c_double> =
                 lib.get(b"CalculateCircleArea")?;
+            // Retrieve the symbol for CalculateCircleArea.
+            let calculate_struct_area: libloading::Symbol<
+                unsafe extern "C" fn(Circle) -> c_double,
+            > = lib.get(b"CalculateCircleStructArea")?;
             let format_circle_info: Symbol<unsafe extern "C" fn(c_double) -> *mut c_char> =
                 lib.get(b"FormatCircleInfo")?;
             let free_string: Symbol<unsafe extern "C" fn(*mut c_char)> = lib.get(b"FreeString")?;
@@ -58,6 +75,7 @@ impl CircleLibrary {
                 _lib: lib,
                 // Dereference the symbols to store the function pointers.
                 calculate_circle_area: *calculate_circle_area,
+                calculate_struct_area: *calculate_struct_area,
                 format_circle_info: *format_circle_info,
                 free_string: *free_string,
                 call_callback: *call_callback,
@@ -74,6 +92,12 @@ impl CircleLibrary {
     /// The computed area as an `f64`.
     pub fn calculate_circle_area(&self, radius: f64) -> f64 {
         unsafe { (self.calculate_circle_area)(radius) }
+    }
+
+    /// A safe method that accepts a reference to a Circle and returns its area.
+    pub fn calculate_circle_struct_area(&self, circle: &Circle) -> f64 {
+        // The external function expects the struct by value.
+        unsafe { (self.calculate_struct_area)(*circle) }
     }
 
     /// Returns a formatted string with circle information.
@@ -153,6 +177,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let area = circle_lib.calculate_circle_area(radius);
     println!("Calculated area: {}", area);
 
+    let circle = Circle { radius };
+    let area = circle_lib.calculate_circle_struct_area(&circle);
+    println!("Calculated area (struct): {}", area);
+
     let info = circle_lib.format_circle_info(radius)?;
     println!("{}", info);
 
@@ -162,8 +190,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Now call the callback function by supplying a Rust closure.
     // Here, the closure simply computes the square of its input.
-    let call_with_result = circle_lib.call_callback_with(5.0, |x| x * x);
-    println!("Callback result (square of 5.0): {}", call_with_result);
+    let callback_result = circle_lib.call_callback_with(5.0, |x| x * x);
+    println!(
+        "Callback result with closure (square of 5.0): {}",
+        callback_result
+    );
 
     Ok(())
 }

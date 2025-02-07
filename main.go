@@ -10,6 +10,11 @@ typedef double (*callback_t)(double);
 static double call_callback(callback_t cb, double val) {
     return cb(val);
 }
+
+// Define a Circle struct with a radius field.
+typedef struct {
+    double radius;
+} Circle;
 */
 import "C"
 
@@ -22,6 +27,15 @@ import (
 //export CalculateCircleArea
 func CalculateCircleArea(radius C.double) C.double {
 	return C.double(math.Pi * float64(radius) * float64(radius))
+}
+
+//export CalculateCircleStructArea
+func CalculateCircleStructArea(c C.Circle) C.double {
+	// Convert the C.double field to a Go float64.
+	radius := float64(c.radius)
+	// Compute the area of the circle.
+	area := math.Pi * radius * radius
+	return C.double(area)
 }
 
 //export FormatCircleInfo
