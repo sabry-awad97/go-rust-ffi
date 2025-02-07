@@ -261,8 +261,8 @@ unsafe extern "C" fn async_trampoline_multi(result: c_double, user_data: *mut c_
     // Return false on the last callback (we know there will be 3 callbacks)
     static mut CALLBACK_COUNT: u32 = 0;
     CALLBACK_COUNT += 1;
-    let continue_receiving = CALLBACK_COUNT < 3;
-    continue_receiving
+    
+    CALLBACK_COUNT < 3
 }
 
 /// Extern "C" trampoline for asynchronous callbacks.
@@ -302,7 +302,7 @@ impl<'lib> NumberGenerator<'lib> {
                 self.lib.get(b"GetNextNumber")?;
             let (num, ok) = get_next(self.id);
             if ok {
-                Ok(Some(num as i32))
+                Ok(Some(num))
             } else {
                 Ok(None)
             }
@@ -413,7 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example using Go channels through the number generator
     println!("\nTesting Go channels with number generator:");
-    let generator = NumberGenerator::new(&circle_lib._lib)?;
+    let generator = NumberGenerator::new(circle_lib._lib)?;
 
     // Get the first 5 numbers
     for _ in 0..5 {
