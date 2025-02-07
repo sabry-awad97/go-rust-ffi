@@ -6,9 +6,17 @@ package main
 // Define a callback type that takes a double and returns a double.
 typedef double (*callback_t)(double);
 
-// A helper function that calls the provided callback.
+// Define an async callback type that takes a double result and a user data pointer.
+typedef void (*async_callback_t)(double result, void* userData);
+
+// A helper function that calls the provided synchronous callback.
 static double call_callback(callback_t cb, double val) {
     return cb(val);
+}
+
+// A helper function that calls the provided async callback.
+static void call_async_callback(async_callback_t cb, double result, void* userData) {
+    cb(result, userData);
 }
 
 // Define a Circle struct with a radius field.
@@ -17,10 +25,10 @@ typedef struct {
 } Circle;
 */
 import "C"
-
 import (
 	"fmt"
 	"math"
+	"time"
 	"unsafe"
 )
 
@@ -33,7 +41,6 @@ func CalculateCircleArea(radius C.double) C.double {
 func CalculateCircleStructArea(c C.Circle) C.double {
 	// Convert the C.double field to a Go float64.
 	radius := float64(c.radius)
-	// Compute the area of the circle.
 	area := math.Pi * radius * radius
 	return C.double(area)
 }
@@ -53,6 +60,17 @@ func FreeString(str *C.char) {
 //export CallCallback
 func CallCallback(val C.double, cb C.callback_t) C.double {
 	return C.call_callback(cb, val)
+}
+
+//export CalculateCircleAreaAsync
+func CalculateCircleAreaAsync(radius C.double, cb C.async_callback_t, userData unsafe.Pointer) {
+	go func(r C.double, cb C.async_callback_t, userData unsafe.Pointer) {
+		// Simulate asynchronous delay.
+		time.Sleep(1 * time.Second)
+		area := C.double(math.Pi * float64(r) * float64(r))
+		// Instead of converting the function pointer, call the helper C function.
+		C.call_async_callback(cb, area, userData)
+	}(radius, cb, userData)
 }
 
 func main() {} // Required for a Go shared library
