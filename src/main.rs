@@ -2,14 +2,14 @@ use lazy_static::lazy_static;
 use libloading::{Library, Symbol};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_void};
-use std::sync::Mutex;
-use tokio::sync::oneshot;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 /// Type alias for the callback function pointer that the shared library expects.
 /// (This matches the Go-exported callback type.)
 pub type CallbackType = unsafe extern "C" fn(c_double) -> c_double;
 /// Callback type expected by the asynchronous function.
-pub type AsyncCallback = unsafe extern "C" fn(c_double, *mut c_void);
+type AsyncCallback = unsafe extern "C" fn(c_double, *mut c_void) -> bool;
 
 // Global storage for the callback closure.
 // This global variable is protected by a Mutex and allows the trampoline function
@@ -45,6 +45,8 @@ pub struct CircleLibrary {
     call_callback: unsafe extern "C" fn(c_double, CallbackType) -> c_double,
     // Pointer to the asynchronous function.
     calculate_circle_area_async: unsafe extern "C" fn(c_double, AsyncCallback, *mut c_void),
+    calculate_circle_area_async_multiple:
+        unsafe extern "C" fn(c_double, AsyncCallback, *mut c_void),
 }
 
 impl CircleLibrary {
@@ -79,6 +81,10 @@ impl CircleLibrary {
                 unsafe extern "C" fn(c_double, AsyncCallback, *mut c_void),
             > = lib.get(b"CalculateCircleAreaAsync")?;
 
+            let calculate_circle_area_async_multiple: Symbol<
+                unsafe extern "C" fn(c_double, AsyncCallback, *mut c_void),
+            > = lib.get(b"CalculateCircleAreaAsyncMultiple")?;
+
             Ok(CircleLibrary {
                 _lib: lib,
                 // Dereference the symbols to store the function pointers.
@@ -88,6 +94,7 @@ impl CircleLibrary {
                 free_string: *free_string,
                 call_callback: *call_callback,
                 calculate_circle_area_async: *calculate_circle_area_async,
+                calculate_circle_area_async_multiple: *calculate_circle_area_async_multiple,
             })
         }
     }
@@ -182,6 +189,21 @@ impl CircleLibrary {
         // Await the result; if the channel is dropped, return 0.0.
         receiver.await.unwrap_or(0.0)
     }
+
+    /// Calls the asynchronous function which produces multiple callback invocations.
+    /// Returns an mpsc::UnboundedReceiver that yields each result.
+    pub fn calculate_circle_area_async_multi(&self, radius: f64) -> mpsc::UnboundedReceiver<f64> {
+        // Create an unbounded channel.
+        let (tx, rx) = mpsc::unbounded_channel();
+        // Create a new sender for each callback
+        let tx = Arc::new(Mutex::new(tx));
+        // Convert the Arc into a raw pointer.
+        let user_data = Box::into_raw(Box::new(tx)) as *mut c_void;
+        unsafe {
+            (self.calculate_circle_area_async_multiple)(radius, async_trampoline_multi, user_data);
+        }
+        rx
+    }
 }
 
 /// Extern "C" trampoline function that matches the expected callback signature.
@@ -195,11 +217,33 @@ extern "C" fn trampoline(val: c_double) -> c_double {
     }
 }
 
+/// Extern "C" trampoline for asynchronous callbacks that supports multiple shots.
+/// It recovers the Arc-wrapped sender and sends each callback result.
+/// Returns true to continue receiving callbacks, false when done.
+unsafe extern "C" fn async_trampoline_multi(result: c_double, user_data: *mut c_void) -> bool {
+    println!("Rust: Received callback with result {}", result);
+    // Convert the raw pointer back to a reference.
+    let tx = &*(user_data as *const Arc<Mutex<mpsc::UnboundedSender<f64>>>);
+    // Attempt to send the result (ignore errors if the receiver is dropped).
+    if let Ok(tx) = tx.lock() {
+        match tx.send(result) {
+            Ok(_) => println!("Rust: Successfully sent result"),
+            Err(e) => println!("Rust: Failed to send result: {}", e),
+        }
+    }
+    // Return false on the last callback (we know there will be 3 callbacks)
+    static mut CALLBACK_COUNT: u32 = 0;
+    CALLBACK_COUNT += 1;
+    let continue_receiving = CALLBACK_COUNT < 3;
+    continue_receiving
+}
+
 /// Extern "C" trampoline for asynchronous callbacks.
 /// This function recovers the boxed oneshot sender from the user data and sends the result.
-unsafe extern "C" fn async_trampoline(result: c_double, user_data: *mut c_void) {
+unsafe extern "C" fn async_trampoline(result: c_double, user_data: *mut c_void) -> bool {
     let boxed_sender: Box<oneshot::Sender<f64>> = Box::from_raw(user_data as *mut _);
     let _ = boxed_sender.send(result);
+    false // This is a one-shot callback, so we're done after sending
 }
 
 #[tokio::main]
@@ -228,9 +272,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Demonstrate the asynchronous function.
-    println!("Calling asynchronous calculation...");
+    println!("Calling asynchronous one-shot calculation...");
     let async_area = circle_lib.calculate_circle_area_async(radius).await;
     println!("Asynchronous area for radius {}: {}", radius, async_area);
+
+    println!("Calling asynchronous multi-shot calculation...");
+    let mut rx = circle_lib.calculate_circle_area_async_multi(radius);
+
+    // Create a shorter timeout for testing
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(4));
+    tokio::pin!(timeout);
+
+    println!("Rust: Starting to receive results...");
+    // Receive multiple callback results as they arrive, with a timeout
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Some(async_area) => {
+                        println!("Asynchronous multi-shot area: {}", async_area);
+                    }
+                    None => {
+                        println!("Rust: Channel closed, all results received");
+                        break;
+                    }
+                }
+            }
+            _ = &mut timeout => {
+                println!("Rust: Timeout waiting for results");
+                break;
+            }
+        }
+    }
+    println!("Rust: Finished receiving results");
 
     Ok(())
 }

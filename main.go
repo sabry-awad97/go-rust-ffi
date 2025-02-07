@@ -7,7 +7,8 @@ package main
 typedef double (*callback_t)(double);
 
 // Define an async callback type that takes a double result and a user data pointer.
-typedef void (*async_callback_t)(double result, void* userData);
+// Returns true if more callbacks are expected, false if this is the last callback.
+typedef _Bool (*async_callback_t)(double result, void* userData);
 
 // A helper function that calls the provided synchronous callback.
 static double call_callback(callback_t cb, double val) {
@@ -15,8 +16,9 @@ static double call_callback(callback_t cb, double val) {
 }
 
 // A helper function that calls the provided async callback.
-static void call_async_callback(async_callback_t cb, double result, void* userData) {
-    cb(result, userData);
+// Returns true if more callbacks are expected, false if this is the last callback.
+static _Bool call_async_callback(async_callback_t cb, double result, void* userData) {
+    return cb(result, userData);
 }
 
 // Define a Circle struct with a radius field.
@@ -71,6 +73,25 @@ func CalculateCircleAreaAsync(radius C.double, cb C.async_callback_t, userData u
 		// Instead of converting the function pointer, call the helper C function.
 		C.call_async_callback(cb, area, userData)
 	}(radius, cb, userData)
+}
+
+//export CalculateCircleAreaAsyncMultiple
+func CalculateCircleAreaAsyncMultiple(radius C.double, cb C.async_callback_t, userData unsafe.Pointer) {
+    // Spawn a goroutine that calls the callback multiple times.
+    go func(r C.double, cb C.async_callback_t, userData unsafe.Pointer) {
+        // For example, call the callback three times (simulate multiple events).
+        for i := 0; i < 3; i++ {
+            time.Sleep(1 * time.Second)
+            // Calculate the area (same value each time in this example).
+            area := C.double(math.Pi * float64(r) * float64(r))
+            // Use the helper function to call the callback.
+            // If this is the last callback (i == 2), return false to signal completion
+            shouldContinue := bool(C.call_async_callback(cb, area, userData))
+            if !shouldContinue {
+                break
+            }
+        }
+    }(radius, cb, userData)
 }
 
 func main() {} // Required for a Go shared library
